@@ -1,41 +1,46 @@
-import logging
-from openai_config import call_openai_chat
+from openai_config import client
 
-def generate_report(literature, biomarkers, analysis):
-    logging.info("[REPORT_GENERATOR] Generating report...")
+def generate_final_report(literature, biomarkers, pathways):
+    assistant = client.beta.assistants.create(
+        name="Scientific Report Generator",
+        instructions=(
+            "You are a biomedical scientist. Generate a report using literature findings, biomarker "
+            "stats, and pathway/drug insights. Use structured natural language and output sections: "
+            "Introduction, Biomarker Analysis, Pathway Mapping, Drug Insights, Conclusion."
+        ),
+        model="gpt-4",
+        tools=[],
+        temperature=0.4,
+        logit_bias={},
+        response_format="auto"
+    )
 
-    prompt = [
-        {
-            "role": "system",
-            "content": "You are an expert biomedical assistant generating structured reports."
-        },
-        {
-            "role": "user",
-            "content": f"""
-Create a scientific report summarizing the following:
+    thread = client.beta.threads.create()
 
-Literature Findings:
-{literature}
+    full_context = (
+        f"LITERATURE:\n{literature}\n\n"
+        f"BIOMARKERS:\n{biomarkers}\n\n"
+        f"PATHWAYS:\n{pathways}"
+    )
 
-Biomarker Analysis:
-{biomarkers}
+    client.beta.threads.messages.create(
+        thread_id=thread.id,
+        role="user",
+        content=full_context
+    )
 
-Pathway and Drug Mapping:
-{analysis}
+    run = client.beta.threads.runs.create(
+        thread_id=thread.id,
+        assistant_id=assistant.id,
+        stream=True,
+        tool_choice="auto",
+        function_call="auto",
+        max_tokens=800
+    )
 
-Include an integrated conclusion for translational research.
-"""
-        }
-    ]
-
-    response = call_openai_chat(prompt, stream=True)
-
-    full_report = ""
-    for chunk in response:
-        content = getattr(chunk.choices[0].delta, "content", "")
-        if content:
-            print(content, end="", flush=True)
-            full_report += content
-
-    logging.info("[REPORT_GENERATOR] ✅ Report assembled.")
-    return full_report
+    from openai import Stream
+    result = []
+    for chunk in run:
+        if hasattr(chunk, "delta") and hasattr(chunk.delta, "content"):
+            result.append(chunk.delta.content)
+    return ''.join(result).strip()
