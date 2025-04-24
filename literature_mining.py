@@ -1,48 +1,25 @@
-import logging
-import json
-import re
-from openai_config import call_openai_chat
+from openai_config import client
 from schemas import LiteratureOutput
+from utils import validate_and_retry
+import json, re
 
-def clean_json_string(raw: str) -> str:
-    # Remove trailing commas and fix common formatting issues
-    raw = re.sub(r",\s*}", "}", raw)
-    raw = re.sub(r",\s*]", "]", raw)
-    raw = raw.replace("'", '"')
-    return raw.strip()
+def run_literature_agent(query: str) -> LiteratureOutput:
+    def _run(prompt):
+        assistant = client.beta.assistants.create(
+            name="Literature Agent",
+            instructions="Simulate a biomedical literature search. Return a JSON with papers [{title, id}] and source_databases [].",
+            model="gpt-4",
+        )
+        thread = client.beta.threads.create()
+        client.beta.threads.messages.create(thread_id=thread.id, role="user", content=f"Query: {prompt}")
+        run = client.beta.threads.runs.create(thread_id=thread.id, assistant_id=assistant.id)
 
-def literature_mining(query):
-    logging.info("[LITERATURE_AGENT] Query: " + query)
+        while run.status != "completed":
+            run = client.beta.threads.runs.retrieve(thread_id=thread.id, run_id=run.id)
 
-    prompt = [
-        {
-            "role": "system",
-            "content": "You are a biomedical literature expert. Always return a JSON object with fields: papers (list of {title, id}) and source_databases (list)."
-        },
-        {
-            "role": "user",
-            "content": f"""Search for recent studies on: "{query}". Return results in JSON only."""
-        }
-    ]
-
-    try:
-        response = call_openai_chat(prompt)
-        raw = response.choices[0].message.content.strip()
-        logging.info(f"[LITERATURE_AGENT] Raw OpenAI response:\n{raw}")
-
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError:
-            cleaned = clean_json_string(raw)
-            parsed = json.loads(cleaned)
-
-        validated = LiteratureOutput(**parsed)
-        logging.info(f"[LITERATURE_AGENT] ✅ Parsed {len(validated.papers)} papers from {validated.source_databases}")
-        return validated.dict()
-
-    except Exception as e:
-        logging.error(f"[LITERATURE_AGENT] ❌ Failed to parse OpenAI response: {e}")
-        return {
-            "papers": [],
-            "source_databases": []
-        }
+        messages = client.beta.threads.messages.list(thread_id=thread.id)
+        raw = messages.data[0].content[0].text.value
+        json_block = re.search(r"\{.*\}", raw, re.DOTALL)
+        return LiteratureOutput(**json.loads(json_block.group()))
+    
+    return validate_and_retry(_run, validator_func=None, input_data=query, agent_name="Literature Agent")
