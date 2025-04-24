@@ -1,25 +1,28 @@
-# schemas.py
-from pydantic import BaseModel, Field
-from typing import List, Dict, Optional
+from pydantic import BaseModel
+from typing import List, Dict
 
-class LiteratureResult(BaseModel):
+class Paper(BaseModel):
     title: str
     id: str
 
 class LiteratureOutput(BaseModel):
-    papers: List[LiteratureResult]
+    papers: List[Paper]
     source_databases: List[str]
 
-class DEGResult(BaseModel):
+class GeneEntry(BaseModel):
+    gene: str
+    condition: str
+
+class DEGStat(BaseModel):
     gene: str
     log2FoldChange: float
     pvalue: float
     padj: float
 
 class BiomarkerOutput(BaseModel):
-    known_biomarkers: List[str]
-    novel_predictions: List[str]
-    deg_results: List[DEGResult]
+    known_biomarkers: List[GeneEntry]
+    novel_predictions: List[GeneEntry]
+    deg_results: List[DEGStat]
 
 class PathwayOutput(BaseModel):
     pathways: List[str]
