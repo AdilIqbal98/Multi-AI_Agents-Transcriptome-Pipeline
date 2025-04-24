@@ -1,46 +1,54 @@
-import logging
-import json
-from openai_config import call_openai_chat
+from openai_config import client
 from schemas import PathwayOutput
+from utils import validate_and_retry
+import json
+import re
 
-def pathway_drug_analysis(biomarkers):
-    combined = biomarkers.get("known_biomarkers", []) + biomarkers.get("novel_predictions", [])
-
-    prompt = [
-        {
-            "role": "system",
-            "content": "Map biomarkers to pathways and drug targets. Return a JSON object with keys as gene names and values as {pathways: [...], drug_targets: [...]}."
-        },
-        {
-            "role": "user",
-            "content": f"""Genes: {combined}"""
-        }
-    ]
-
-    try:
-        response = call_openai_chat(prompt)
-        raw = response.choices[0].message.content.strip()
-        logging.info(f"[PATHWAY_AGENT] Raw output:\n{raw}")
-
-        gene_map = json.loads(raw)
-
-        # Flatten gene_map into list of pathways and list of drug_targets
-        all_pathways = set()
-        all_drugs = set()
-
-        for gene, info in gene_map.items():
-            all_pathways.update(info.get("pathways", []))
-            all_drugs.update(info.get("drug_targets", []))
-
-        result = PathwayOutput(
-            pathways=sorted(list(all_pathways)),
-            drug_targets=sorted(list(all_drugs))
+def run_pathway_agent(genes: list) -> PathwayOutput:
+    def _run(input_genes):
+        assistant = client.beta.assistants.create(
+            name="Pathway & Drug Mapping Agent",
+            instructions=(
+                "You are a biomedical informatics expert. Given gene names, return a JSON object containing "
+                "'pathways': list of pathway names (strings) and "
+                "'drug_targets': list of drug names (strings) targeting the input genes. "
+                "Use only real human biological pathways (e.g., KEGG, Reactome) and real FDA-approved or experimental drug names. "
+                "Avoid using placeholder or dummy data like 'Unknown' or 'GENE_XYZ'."
+            ),
+            model="gpt-4"
         )
-        return result.dict()
 
-    except Exception as e:
-        logging.error(f"[PATHWAY_AGENT] ❌ Failed to parse pathway response: {e}")
-        return {
-            "pathways": [],
-            "drug_targets": []
-        }
+        gene_list = ", ".join(input_genes)
+        thread = client.beta.threads.create()
+        client.beta.threads.messages.create(
+            thread_id=thread.id,
+            role="user",
+            content=f"Map these biomarkers to pathways and drugs: {gene_list}"
+        )
+
+        run = client.beta.threads.runs.create(thread_id=thread.id, assistant_id=assistant.id)
+        while run.status != "completed":
+            run = client.beta.threads.runs.retrieve(thread_id=thread.id, run_id=run.id)
+
+        messages = client.beta.threads.messages.list(thread_id=thread.id)
+        raw = messages.data[0].content[0].text.value.strip()
+
+        print("🧪 Raw Pathway Output:\n", raw)
+
+        try:
+            json_str = re.search(r"\{.*\}", raw, re.DOTALL).group()
+            nested = json.loads(json_str)
+
+            # Flatten into two unique lists
+            pathways_set = set()
+            drug_set = set()
+            for gene_info in nested.values():
+                pathways_set.update(gene_info.get("pathways", []))
+                drug_set.update(gene_info.get("drug_targets", []))
+
+            return PathwayOutput(pathways=list(pathways_set), drug_targets=list(drug_set))
+        except Exception as e:
+            print("❌ Failed to parse pathway response:", e)
+            raise
+
+    return validate_and_retry(_run, validator_func=None, input_data=genes, agent_name="Pathway Agent")
